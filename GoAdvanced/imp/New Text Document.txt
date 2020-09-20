@@ -1,0 +1,359 @@
+package main
+
+import (
+	b64 "encoding/base64"
+	"fmt"
+	"github.com/OpenNebula/one/src/oca/go/src/goca"
+	"github.com/labstack/echo/v4"
+	"net/http"
+	"regexp"
+	"strconv"
+	"time"
+)
+
+type (
+	// Description of an existing VM
+	vmGet struct {
+		ID       int       `json:"id"`
+		Name     string    `json:"name"`
+		Logo     string    `json:"logo"`
+		TID      string    `json:"tid"`
+		IPv4     string    `json:"ipv4"`
+		IPv6     string    `json:"ipv6,omitempty"`
+		State    string    `json:"state"`
+		LCMState string    `json:"lcmstate"`
+		Time     time.Time `json:"time"`
+		Disk     int       `json:"disk"`
+		Memory   int       `json:"memory"`
+		Vcpu     int       `json:"vcpu"`
+	}
+	// Array of VMS
+	vmsGet struct {
+		VMs []vmGet `json:"vms"`
+	}
+	// Description to create a VM
+	vmPost struct {
+		ID            int    `json:"tid" form:"tid"`
+		Name          string `json:"name" form:"name"`
+		VCPU          int    `json:"cpu" form:"cpu"`
+		Memory        int    `json:"memory" form:"memory"`
+		Password      string `json:"password" form:"password"`
+		SSHKey        string `json:"sshkey" form:"sshkey"`
+		Disk          int    `json:"disk" form:"disk"`
+		StartupScript string `json:"StartupScript" form:"StartupScript"`
+	}
+	// Snapshot
+	snapshotGet struct {
+		ID   int       `json:"id"`
+		Name string    `json:"name"`
+		Time time.Time `json:"time"`
+	}
+	// Snapshots
+	snapshotsGet struct {
+		Snapshots []snapshotGet `json:"snapshots"`
+	}
+	// Snapshot name
+	snapshotCreatePost struct {
+		Name string `json:"name" form:"name"`
+	}
+	// Actions
+	actionConfig struct {
+		Type   string `json:"type" form:"type"`
+		Name   string `json:"name" form:"name"`
+		Memory int    `json:"memory" form:"memory"`
+		CPU    int    `json:"cpu" form:"cpu"`
+		Disk   int    `json:"disk" form:"disk"`
+	}
+)
+
+var (
+	// Regexes for extracting info from OpenNebula's API response
+	templateIDRegex   = regexp.MustCompile(`TEMPLATE_ID=\"(.*)\"`)
+	imageRegex        = regexp.MustCompile(`IMAGE=\"(.*)\"`)
+	imageunameRegex   = regexp.MustCompile(`IMAGE_UNAME=\"(.*)\"`)
+	disksizeRegex     = regexp.MustCompile(` SIZE=\"(.*)\"`)
+	ipv4Regex         = regexp.MustCompile(`ETH0_IP=\"(.*)\"`)
+	ipv6Regex         = regexp.MustCompile(`ETH0_IP6=\"(.*)\"`)
+	snapshotRegex     = regexp.MustCompile(`(?s)SNAPSHOT=\[(.*?)\" ]`)
+	snapshotNameRegex = regexp.MustCompile(`NAME=\"(.*)\"`)
+	snapshotIDRegex   = regexp.MustCompile(`SNAPSHOT_ID=\"(.*)\"`)
+	snapshotTimeRegex = regexp.MustCompile(`TIME=\"(.*)\"`)
+	csrfRegex         = regexp.MustCompile(`(?s)var csrftoken = '(.*)';`)
+	MemoryRegex       = regexp.MustCompile(`MEMORY=\"(.*)\"`)
+	VcpuRegex         = regexp.MustCompile(`VCPU=\"(.*)\"`)
+)
+
+// getVMs returns the general details[id, name, ip, lcm state] of all the VMs accessible by user.
+func getVMs(c echo.Context) error {
+	one := c.Get("one").(*goca.Controller)
+	vms, err := one.VMs().Info(-1)
+	if err == nil {
+		vmslist := make([]vmGet, len(vms.VMs))
+		for i := 0; i < len(vms.VMs); i++ {
+			vm, _ := one.VM(vms.VMs[i].ID).Info(false)
+			vmslist[i].ID = vm.ID
+			vmslist[i].Name = vm.Name
+			vmslist[i].TID = templateIDRegex.FindStringSubmatch(vm.Template.String())[1]
+			vmslist[i].Logo = xonglURL + "/" + logoRegex.FindStringSubmatch(vm.UserTemplate.String())[1]
+			vmslist[i].IPv4 = ipv4Regex.FindStringSubmatch(vm.Template.String())[1]
+			vmslist[i].IPv6 = ipv6Regex.FindStringSubmatch(vm.Template.String())[1]
+			vmslist[i].State, vmslist[i].LCMState, _ = vm.StateString()
+			vmslist[i].Time = time.Unix(int64(vm.STime), 0)
+			getvcpu := VcpuRegex.FindStringSubmatch(vm.Template.String())[1]
+			vmslist[i].Vcpu, _ = strconv.Atoi(getvcpu)
+			getmemory := MemoryRegex.FindStringSubmatch(vm.Template.String())[1]
+			vmslist[i].Memory, _ = strconv.Atoi(getmemory)
+			diskSize := disksizeRegex.FindStringSubmatch(vm.Template.String())[1]
+			vmslist[i].Disk, _ = strconv.Atoi(diskSize)
+		}
+		vmsjson := &vmsGet{
+			VMs: vmslist,
+		}
+		return c.JSON(http.StatusOK, vmsjson)
+	}
+	return c.JSON(http.StatusBadRequest, errorMsg(err))
+}
+
+// Get the details of a VM
+func getVM(c echo.Context) error {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err == nil {
+		one := c.Get("one").(*goca.Controller)
+		vm, err := one.VM(id).Info(false)
+		if err == nil {
+			vminfo := &vmGet{}
+			vminfo.ID = vm.ID
+			vminfo.Name = vm.Name
+			vminfo.TID = templateIDRegex.FindStringSubmatch(vm.Template.String())[1]
+			vminfo.Logo = xonglURL + "/" + logoRegex.FindStringSubmatch(vm.UserTemplate.String())[1]
+			vminfo.IPv4 = ipv4Regex.FindStringSubmatch(vm.Template.String())[1]
+			vminfo.IPv6 = ipv6Regex.FindStringSubmatch(vm.Template.String())[1]
+			vminfo.State, vminfo.LCMState, _ = vm.StateString()
+			vminfo.Time = time.Unix(int64(vm.STime), 0)
+			diskSize := disksizeRegex.FindStringSubmatch(vm.Template.String())[1]
+			vminfo.Disk, _ = strconv.Atoi(diskSize)
+			getvcpu := VcpuRegex.FindStringSubmatch(vm.Template.String())[1]
+			vminfo.Vcpu, _ = strconv.Atoi(getvcpu)
+			getmemory := MemoryRegex.FindStringSubmatch(vm.Template.String())[1]
+			vminfo.Memory, _ = strconv.Atoi(getmemory)
+			return c.JSON(http.StatusOK, vminfo)
+		}
+		return c.JSON(http.StatusBadRequest, errorMsg(err))
+	}
+	return c.JSON(http.StatusBadRequest, errorJSON{"Invalid VM ID[id should be an integer]"})
+}
+
+// createVM creates the VM using details[tid, name, memory, password/sshkey, vcpus, disk size]
+func createVM(c echo.Context) error {
+	config := new(vmPost)
+	one := c.Get("one").(*goca.Controller)
+	if err := c.Bind(config); err == nil {
+		if config.ID != 0 {
+			if config.Password != "" || config.SSHKey != "" {
+				templateString := ""
+				if config.Memory != 0 && (config.Memory >= 2048 && config.Memory <= 8192) {
+					memory := strconv.Itoa(config.Memory)
+					templateString = templateString + "MEMORY=" + memory + "\n"
+				}
+				//if config.Memory != 0 && (config.Memory >= 2048 && config.Memory <= 8192) {
+				//	templateString = templateString + "MEMORY" +strconv.Atoi(config.Memory) + "\n"
+				//}
+				if config.Disk != 0 {
+					size := strconv.Itoa(config.Disk)
+					templateinfo, err := one.Template(config.ID).Info(true, false)
+					if err == nil {
+						image := imageRegex.FindStringSubmatch(templateinfo.Template.String())[1]
+						imageuname := imageunameRegex.FindStringSubmatch(templateinfo.Template.String())[1]
+						if config.Disk < 122880 {
+							templateString = templateString + "DISK=[IMAGE=\"" + image + "\"," + "IMAGE_UNAME=\"" + imageuname + "\"," + "SIZE=\"" + size + "\"]\n"
+						} else {
+							templateString = templateString + "DISK=[IMAGE=\"" + image + "\"," + "IMAGE_UNAME=\"" + imageuname + "\"," + "SIZE=\"" + "122880" + "\"]\n"
+						}
+					} else {
+						return c.JSON(http.StatusBadRequest, errorMsg(err))
+					}
+				}
+				if config.VCPU != 0 && (config.VCPU >= 1 && config.VCPU <= 4) {
+					templateString = templateString + "VCPU=" + strconv.Itoa(config.VCPU) + "\n"
+
+					vcpu := strconv.Itoa(config.VCPU)
+					cpu := float64(config.VCPU) / 4
+					mycpu := fmt.Sprintf("%0.2f", cpu)
+					templateString = templateString + "CPU=" + mycpu + "\n"
+					templateString = templateString + "VCPU=" + vcpu + "\n"
+				}
+
+				if config.Password != "" {
+					password := b64.StdEncoding.EncodeToString([]byte(config.Password))
+					templateString = templateString + "PASSWORD_BASE64=" + "\"" + password + "\"" + "\n"
+				}
+				if config.SSHKey != "" {
+					templateString = templateString + "SSH_PUBLIC_KEY=" + "\"" + config.SSHKey + "\"" + "\n"
+				}
+				if config.StartupScript != "" {
+					templateString = templateString + "START_SCRIPT=" + "\"" + config.StartupScript + "\"" + "\n"
+				}
+				if config.Name != "" {
+					templateString = templateString + "SET_HOSTNAME=" + "\"" + config.Name + "\"" + "\n"
+				}
+				id, err := one.Template(config.ID).Instantiate(config.Name, false, templateString, false)
+				if err == nil {
+					return c.JSON(http.StatusCreated, okMsg("%v[%v] is created\n", config.Name, id))
+				}
+				return c.JSON(http.StatusBadRequest, errorMsg(err))
+			}
+			return c.JSON(http.StatusBadRequest, errorJSON{"Please provide Password or SSHKey to create VM"})
+		}
+		return c.JSON(http.StatusBadRequest, errorJSON{"Please provide a template ID to create VM"})
+	}
+	return c.JSON(http.StatusBadRequest, errorJSON{"Invalid data!"})
+}
+
+// Delete VM
+func deleteVM(c echo.Context) error {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err == nil {
+		one := c.Get("one").(*goca.Controller)
+		err := one.VM(id).Action("terminate-hard")
+		if err == nil {
+			return c.JSON(http.StatusOK, okMsg("VM is deleted"))
+		}
+		return c.JSON(http.StatusBadRequest, errorMsg(err))
+	}
+	return c.JSON(http.StatusBadRequest, errorJSON{"Invalid VM ID[id should be an integer]"})
+}
+
+// Submit actions such as reboot <--hard>, power off <--hard>, resume, suspend
+func actionVM(c echo.Context) error {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err == nil {
+		config := new(actionConfig)
+		one := c.Get("one").(*goca.Controller)
+		if err := c.Bind(config); err == nil {
+			switch config.Type {
+			case "reboot", "reboot-hard", "poweroff", "poweroff-hard", "suspend", "resume", "stop":
+				err = one.VM(id).Action(config.Type)
+			case "rename":
+				err = one.VM(id).Rename(config.Name)
+			case "recover":
+				err = one.VM(id).Recover(4)
+
+			case "resize":
+				var templateString string
+				if config.Memory != 0 && (config.Memory >= 2048 && config.Memory <= 8192) {
+					templateString = templateString + "MEMORY=" + strconv.Itoa(config.Memory) + "\n"
+				}
+				if config.Memory != 0 && (config.Memory > 8192 || config.Memory < 2048) {
+					return c.JSON(http.StatusBadRequest, errorJSON{`Ram cannot be less than 2 or greater than 8 `})
+				}
+				if config.CPU != 0 && (config.CPU >= 1 && config.CPU <= 4) {
+					templateString = templateString + "VCPU=" + strconv.Itoa(config.CPU) + "\n"
+					cpu := float64(config.CPU) / 4
+					mycpu := fmt.Sprintf("%0.2f", cpu)
+					templateString = templateString + "CPU=" + mycpu + "\n"
+				}
+				if config.CPU != 0 && (config.CPU > 4 || config.CPU < 1) {
+					return c.JSON(http.StatusBadRequest, errorJSON{`VCPU cannot be less than 1 or greater than 4 `})
+				}
+				err = one.VM(id).Resize(templateString, true)
+			case "disk-resize":
+				var templateString string
+				if config.Disk != 0 && (config.Disk >= 30720 && config.Disk <= 122880) {
+					templateString = templateString + "DISK=" + strconv.Itoa(config.Disk) + "\n"
+				}
+				if config.Disk != 0 && (config.Disk > 122880 || config.Disk < 30720) {
+					return c.JSON(http.StatusBadRequest, errorJSON{`DiskSize cannot be less than 30 or greater than 120`})
+				}
+				//err = one.VM(id).Resize(templateString, true)
+				err = one.VM(id).Disk(0).Resize(strconv.Itoa(config.Disk))
+			default:
+				return c.JSON(http.StatusBadRequest, errorJSON{`Invalid action for the VM`})
+			}
+			if err == nil {
+				return c.JSON(http.StatusOK, okMsg(`VM[%d] action '%v' done successfully`, id, config.Type))
+			}
+			return c.JSON(http.StatusBadRequest, errorMsg(err))
+		}
+		return c.JSON(http.StatusBadRequest, errorJSON{"No action has been posted"})
+	}
+	return c.JSON(http.StatusBadRequest, errorJSON{"Invalid VM ID[id should be an integer]"})
+}
+
+// Return the list of snapshot
+func snapshotlistVM(c echo.Context) error {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err == nil {
+		one := c.Get("one").(*goca.Controller)
+		vminfo, err := one.VM(id).Info(false)
+		if err == nil {
+			snapshots := snapshotRegex.FindAllStringSubmatch(vminfo.Template.String(), -1)
+			snapshotGets := make([]snapshotGet, len(snapshots))
+			for i := 0; i < len(snapshots); i++ {
+				snapshotGets[i].ID, _ = strconv.Atoi(snapshotIDRegex.FindStringSubmatch(snapshots[i][0])[1])
+				snapshotGets[i].Name = snapshotNameRegex.FindStringSubmatch(snapshots[i][0])[1]
+				t, _ := strconv.ParseInt((snapshotTimeRegex.FindStringSubmatch(snapshots[i][0])[1]), 10, 64)
+				snapshotGets[i].Time = time.Unix(t, 0)
+
+			}
+			snapshotsjson := &snapshotsGet{
+				Snapshots: snapshotGets}
+			return c.JSON(http.StatusOK, snapshotsjson)
+		}
+		return c.JSON(http.StatusBadRequest, errorMsg(err))
+	}
+	return c.JSON(http.StatusBadRequest, errorJSON{"Invalid VM ID[id should be an integer]"})
+}
+
+// Create a snapshot of the VM
+func snapshotcreateVM(c echo.Context) error {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err == nil {
+		config := new(snapshotCreatePost)
+		one := c.Get("one").(*goca.Controller)
+		if err := c.Bind(config); err == nil {
+			err = one.VM(id).SnapshotCreate(config.Name)
+			if err == nil {
+				return c.JSON(http.StatusCreated, okMsg("VM[%d] SNAPSHOT[%s] has been created.", id, config.Name))
+			}
+			return c.JSON(http.StatusBadRequest, errorMsg(err))
+		}
+		return c.JSON(http.StatusBadRequest, errorMsg(err))
+	}
+	return c.JSON(http.StatusBadRequest, errorJSON{"Invalid VM ID[id should be an integer]"})
+}
+
+// Delete the snapshot of the VM
+func snapshotdeleteVM(c echo.Context) error {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err == nil {
+		sid, err := strconv.Atoi(c.Param("sid"))
+		if err == nil {
+			one := c.Get("one").(*goca.Controller)
+			err = one.VM(id).SnapshotDelete(sid)
+			if err == nil {
+				return c.JSON(http.StatusOK, okMsg("VM[%d] SNAPSHOT[%d] has been deleted.", id, sid))
+			}
+			return c.JSON(http.StatusBadRequest, errorMsg(err))
+		}
+		return c.JSON(http.StatusBadRequest, errorJSON{"Invalid SNAPSHOT ID[id should be an integer]"})
+	}
+	return c.JSON(http.StatusBadRequest, errorJSON{"Invalid VM ID[id should be an integer]"})
+}
+
+// Restore the snapshot of the VM
+func snapshotrestoreVM(c echo.Context) error {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err == nil {
+		sid, err := strconv.Atoi(c.Param("sid"))
+		if err == nil {
+			one := c.Get("one").(*goca.Controller)
+			err = one.VM(id).SnapshotRevert(sid)
+			if err == nil {
+				return c.JSON(http.StatusOK, okMsg("VM[%d] SNAPSHOT[%d] has been restored.", id, sid))
+			}
+			return c.JSON(http.StatusBadRequest, errorMsg(err))
+		}
+		return c.JSON(http.StatusBadRequest, errorJSON{"Invalid SNAPSHOT ID[id should be an integer]"})
+	}
+	return c.JSON(http.StatusBadRequest, errorJSON{"Invalid VM ID[id should be an integer]"})
+}
