@@ -12,7 +12,12 @@ func main(){
 	a[0] = 12 // index starts at 0
 	a[1] = 78
 	a[2] = 50
+	
+	var b = [3]int{12,14,16}//another way to declare an array.
+	
 	fmt.Println(a)
+	fmt.Println(b)
+	
 	fmt.Println(a[1])// accessing the 2nd index value.
 	
 
