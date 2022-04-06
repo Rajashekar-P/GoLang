@@ -22,7 +22,7 @@ func main(){
 	
 
 	// shorthand declaration in arrays
-	b:=[4]int{12,78,5,100} 
+	var b =[4]int{12,78,5,100} 
 	for i,v:= range b{
      
 		 fmt.Println(i,v)
